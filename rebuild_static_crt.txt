@@ -1,0 +1,424 @@
+# Real-Time SDK: Complete Static CRT Rebuild Script
+# This script performs a full clean rebuild with static CRT (/MT) for all externals and SDK libraries
+# For Visual Studio 2022, x64, Release_MD configuration
+
+param(
+    [switch]$SkipClean = $false,
+    [switch]$SkipExternals = $false,
+    [switch]$VerifyOnly = $false
+)
+
+$ErrorActionPreference = "Stop"
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+$REPO_ROOT = "c:\Users\marke\Reuters\RTSDK_GIT\Real-Time-SDK"
+$CMAKE = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+$MSBUILD = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\amd64\MSBuild.exe"
+$DUMPBIN = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\dumpbin.exe"
+$LINK = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\link.exe"
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+function Write-Step {
+    param([string]$Message)
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host $Message -ForegroundColor Cyan
+    Write-Host "========================================`n" -ForegroundColor Cyan
+}
+
+function Write-Success {
+    param([string]$Message)
+    Write-Host "[OK] $Message" -ForegroundColor Green
+}
+
+function Write-Warning-Custom {
+    param([string]$Message)
+    Write-Host "[WARN] $Message" -ForegroundColor Yellow
+}
+
+function Write-Error-Custom {
+    param([string]$Message)
+    Write-Host "[ERROR] $Message" -ForegroundColor Red
+}
+
+function Test-CRT {
+    param(
+        [string]$LibPath,
+        [string]$LibName
+    )
+    
+    if (-not (Test-Path $LibPath)) {
+        Write-Warning-Custom "$LibName not found at $LibPath"
+        return $false
+    }
+    
+    $crtCheck = & $DUMPBIN /directives $LibPath 2>$null | Select-String "DEFAULTLIB:(LIBCMT|MSVCRT)"
+    
+    if (-not $crtCheck) {
+        Write-Host "  $LibName CRT check: No CRT directives (likely import lib)" -ForegroundColor Gray
+        return $true
+    }
+    
+    # Check for mixed CRT by looking for both LIBCMT and MSVCRT
+    $hasLibcmt = $crtCheck | Where-Object { $_ -match "LIBCMT" }
+    $hasMsvcrt = $crtCheck | Where-Object { $_ -match "MSVCRT" }
+    
+    Write-Host "  $LibName CRT check:" -NoNewline
+    
+    if ($hasLibcmt -and $hasMsvcrt) {
+        Write-Host " [ERROR] MIXED CRT" -ForegroundColor Red
+        $libcmtCount = ($hasLibcmt | Measure-Object).Count
+        $msvcrtCount = ($hasMsvcrt | Measure-Object).Count
+        Write-Host "      LIBCMT: $libcmtCount objects" -ForegroundColor Yellow
+        Write-Host "      MSVCRT: $msvcrtCount objects" -ForegroundColor Yellow
+        return $false
+    }
+    elseif ($hasLibcmt) {
+        $count = ($hasLibcmt | Measure-Object).Count
+        Write-Host " [OK] Static CRT (LIBCMT) - $count objects" -ForegroundColor Green
+        return $true
+    }
+    elseif ($hasMsvcrt) {
+        $count = ($hasMsvcrt | Measure-Object).Count
+        Write-Host " [ERROR] Dynamic CRT (MSVCRT) - $count objects" -ForegroundColor Red
+        return $false
+    }
+    else {
+        Write-Host " [WARN] Unknown CRT" -ForegroundColor Yellow
+        return $false
+    }
+}
+
+# ============================================================================
+# Step 1: Clean Previous Artifacts
+# ============================================================================
+
+if (-not $SkipClean -and -not $VerifyOnly) {
+    Write-Step "Step 1: Cleaning Previous Artifacts"
+    
+    cd $REPO_ROOT
+    
+    Write-Host "Removing build directory..."
+    Remove-Item -Recurse -Force "build" -ErrorAction SilentlyContinue
+    
+    Write-Host "Removing external builds..."
+    Remove-Item -Recurse -Force "external\BUILD" -ErrorAction SilentlyContinue
+    
+    Write-Host "Removing install directory (to force rebuild with static CRT)..."
+    Remove-Item -Recurse -Force "install" -ErrorAction SilentlyContinue
+    
+    Write-Success "All artifacts cleaned"
+}
+
+# ============================================================================
+# Step 2: Generate VS2022 Solution
+# ============================================================================
+
+if (-not $VerifyOnly) {
+    Write-Step "Step 2: Generating VS2022 Solution with CMake"
+    
+    cd $REPO_ROOT
+    
+    if (-not (Test-Path "build")) {
+        mkdir "build" | Out-Null
+    }
+    
+    cd "build"
+    
+    Write-Host "Running CMake configuration with static CRT enforcement..."
+    & $CMAKE `
+        -G "Visual Studio 17 2022" -A x64 `
+        -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+        -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+        -Dlibxml2_USE_INSTALLED:BOOL=OFF `
+        -DBUILD_RTSDK-BINARYPACK:BOOL=OFF `
+        -DRTSDK_OPT_BUILD_ETA_EMA_LIBRARIES:BOOL=ON `
+        -DBUILD_UNIT_TESTS:BOOL=OFF `
+        -DBUILD_ETA_EXAMPLES:BOOL=OFF `
+        -DBUILD_EMA_EXAMPLES:BOOL=OFF `
+        -DBUILD_EMA_DOXYGEN:BOOL=OFF `
+        -DBUILD_ETA_TRAINING:BOOL=OFF `
+        -DBUILD_ETA_PERFTOOLS:BOOL=OFF `
+        ..
+    
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error-Custom "CMake configuration failed"
+        exit 1
+    }
+    
+    Write-Success "VS2022 solution generated"
+    cd $REPO_ROOT
+}
+
+# ============================================================================
+# Step 3: Force Rebuild Key Externals with Static CRT (if needed)
+# ============================================================================
+
+if (-not $SkipExternals -and -not $VerifyOnly) {
+    Write-Step "Step 3: Force Rebuilding Key Externals with Static CRT (if needed)"
+    
+    cd $REPO_ROOT
+    
+    # Rebuild zlib with static CRT
+    Write-Host "`nRebuilding zlib..."
+    $zlibSource = "external\BUILD\zlib\source"
+    if (Test-Path $zlibSource) {
+        cd $zlibSource
+        Remove-Item "CMakeCache.txt" -ErrorAction SilentlyContinue
+        Remove-Item -Recurse "CMakeFiles" -ErrorAction SilentlyContinue
+        
+        & $CMAKE `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DCMAKE_INSTALL_PREFIX="$REPO_ROOT\install" `
+            .
+        
+        & $CMAKE --build . --config Release
+        & $CMAKE --build . --config Debug
+        
+        # Copy to install
+        if (-not (Test-Path "$REPO_ROOT\install\lib")) {
+            mkdir "$REPO_ROOT\install\lib" -Force | Out-Null
+        }
+        Copy-Item "Release\zlib.lib" "$REPO_ROOT\install\lib\zlib.lib" -Force
+        Copy-Item "Debug\zlibd.lib" "$REPO_ROOT\install\lib\zlibd.lib" -Force
+        
+        Write-Success "zlib rebuilt"
+        cd $REPO_ROOT
+    }
+    
+    # Rebuild lz4 with static CRT
+    Write-Host "`nRebuilding lz4..."
+    $lz4Source = "external\BUILD\lz4\source\build\cmake"
+    if (Test-Path $lz4Source) {
+        cd $lz4Source
+        Remove-Item "CMakeCache.txt" -ErrorAction SilentlyContinue
+        Remove-Item -Recurse "CMakeFiles" -ErrorAction SilentlyContinue
+        
+        & $CMAKE `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DCMAKE_INSTALL_PREFIX="$REPO_ROOT\install" `
+            -DLZ4_BUILD_CLI=OFF `
+            .
+        
+        & $CMAKE --build . --config Release
+        & $CMAKE --build . --config Debug
+        
+        # Copy to install
+        Copy-Item "Release\lz4.lib" "$REPO_ROOT\install\lib\lz4.lib" -Force
+        Copy-Item "Debug\lz4.lib" "$REPO_ROOT\install\lib\lz4d.lib" -Force
+        
+        Write-Success "lz4 rebuilt"
+        cd $REPO_ROOT
+    }
+    
+    # Rebuild cjson
+    Write-Host "`nRebuilding cjson..."
+    if (Test-Path "external\BUILD\cjson\build") {
+        & $CMAKE --build "external\BUILD\cjson\build" --config Debug
+        & $CMAKE --build "external\BUILD\cjson\build" --config Release
+        Write-Success "cjson rebuilt"
+    }
+    
+    # Rebuild ccronexpr
+    Write-Host "`nRebuilding ccronexpr..."
+    if (Test-Path "external\BUILD\ccronexpr\build") {
+        & $CMAKE --build "external\BUILD\ccronexpr\build" --config Debug
+        & $CMAKE --build "external\BUILD\ccronexpr\build" --config Release
+        Write-Success "ccronexpr rebuilt"
+    }
+    
+    # Rebuild l8w8jwt
+    Write-Host "`nRebuilding l8w8jwt..."
+    if (Test-Path "external\BUILD\l8w8jwt\build") {
+        & $CMAKE --build "external\BUILD\l8w8jwt\build" --config Debug
+        & $CMAKE --build "external\BUILD\l8w8jwt\build" --config Release
+        Write-Success "l8w8jwt rebuilt"
+    }
+}
+
+# ============================================================================
+# Step 4: Verify Static CRT in External Libs
+# ============================================================================
+
+Write-Step "Step 4: Verifying Static CRT in External Libraries"
+
+cd $REPO_ROOT
+
+$externalLibs = @(
+    @{Path="install\lib\zlib.lib"; Name="zlib.lib"},
+    @{Path="install\lib\zlibd.lib"; Name="zlibd.lib"},
+    @{Path="install\lib\lz4.lib"; Name="lz4.lib"},
+    @{Path="install\lib\lz4d.lib"; Name="lz4d.lib"},
+    @{Path="install\lib\cjson.lib"; Name="cjson.lib"},
+    @{Path="install\lib\cjsond.lib"; Name="cjsond.lib"},
+    @{Path="install\lib\ccronexpr.lib"; Name="ccronexpr.lib"},
+    @{Path="install\lib\ccronexprd.lib"; Name="ccronexprd.lib"},
+    @{Path="install\lib\libl8w8jwt.lib"; Name="libl8w8jwt.lib"},
+    @{Path="install\lib\libl8w8jwtd.lib"; Name="libl8w8jwtd.lib"}
+)
+
+$allExternalsOk = $true
+foreach ($lib in $externalLibs) {
+    $result = Test-CRT -LibPath $lib.Path -LibName $lib.Name
+    if (-not $result) {
+        $allExternalsOk = $false
+    }
+}
+
+if ($allExternalsOk) {
+    Write-Success "All external libraries verified with static CRT"
+} else {
+    Write-Error-Custom "Some external libraries have incorrect CRT. Review output above."
+    if (-not $VerifyOnly) {
+        Write-Host "`nConsider re-running with -SkipClean to rebuild externals only." -ForegroundColor Yellow
+        exit 1
+    }
+}
+
+# ============================================================================
+# Step 5: Build SDK Solution
+# ============================================================================
+
+if (-not $VerifyOnly) {
+    Write-Step "Step 5: Building SDK Solution"
+    
+    cd $REPO_ROOT
+    
+    Write-Host "Cleaning SDK solution..."
+    & $MSBUILD "rtsdk.sln" /t:Clean /p:Configuration=Release_MD /p:Platform=x64
+    
+    Write-Host "`nBuilding librssl.lib (static library)..."
+    & $MSBUILD "Cpp-C\Eta\Impl\Codec\librssl.vcxproj" /p:Configuration=Release_MD /p:Platform=x64
+    
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error-Custom "librssl.lib build failed"
+        exit 1
+    }
+    
+    Write-Success "librssl.lib built successfully"
+}
+
+# ============================================================================
+# Step 6: Verify SDK Static Libraries
+# ============================================================================
+
+Write-Step "Step 6: Verifying SDK Static Libraries"
+
+cd $REPO_ROOT
+
+$sdkLibs = @(
+    @{Path="Cpp-C\Eta\Libs\WIN_64_VS143\Release_MD\librssl.lib"; Name="librssl.lib"}
+)
+
+$allSdkLibsOk = $true
+foreach ($lib in $sdkLibs) {
+    $result = Test-CRT -LibPath $lib.Path -LibName $lib.Name
+    if (-not $result) {
+        $allSdkLibsOk = $false
+    }
+}
+
+if ($allSdkLibsOk) {
+    Write-Success "All SDK static libraries verified with static CRT"
+} else {
+    Write-Error-Custom "SDK libraries have mixed CRT. Attempting rebuild..."
+    
+    if (-not $VerifyOnly) {
+        # Full clean and rebuild
+        & $MSBUILD "rtsdk.sln" /t:Clean /p:Configuration=Release_MD /p:Platform=x64
+        & $MSBUILD "Cpp-C\Eta\Impl\Codec\librssl.vcxproj" /p:Configuration=Release_MD /p:Platform=x64
+        
+        # Verify again
+        $result = Test-CRT -LibPath "Cpp-C\Eta\Libs\WIN_64_VS143\Release_MD\librssl.lib" -LibName "librssl.lib (after rebuild)"
+        if (-not $result) {
+            Write-Error-Custom "librssl.lib still has mixed CRT after rebuild"
+            exit 1
+        }
+    } else {
+        exit 1
+    }
+}
+
+# ============================================================================
+# Step 7: Build Shared Libraries
+# ============================================================================
+
+if (-not $VerifyOnly) {
+    Write-Step "Step 7: Building Shared Libraries"
+    
+    cd $REPO_ROOT
+    
+    Write-Host "Building librssl.dll..."
+    & $MSBUILD "Cpp-C\Eta\Impl\Codec\librssl_shared.vcxproj" /p:Configuration=Release_MD /p:Platform=x64
+    
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error-Custom "librssl.dll build failed"
+        exit 1
+    }
+    
+    Write-Host "`nBuilding full SDK solution..."
+    & $MSBUILD "rtsdk.sln" /p:Configuration=Release_MD /p:Platform=x64 /m
+    
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error-Custom "SDK solution build failed"
+        exit 1
+    }
+    
+    Write-Success "SDK solution built successfully"
+}
+
+# ============================================================================
+# Step 8: Verify Output Artifacts
+# ============================================================================
+
+Write-Step "Step 8: Verifying Output Artifacts"
+
+cd $REPO_ROOT
+
+$artifacts = @(
+    "Cpp-C\Eta\Libs\WIN_64_VS143\Release_MD\librssl.lib",
+    "Cpp-C\Eta\Libs\WIN_64_VS143\Release_MD\Shared\librssl.dll",
+    "Cpp-C\Eta\Libs\WIN_64_VS143\Release_MD\Shared\librsslVA.dll",
+    "Cpp-C\Ema\Libs\WIN_64_VS143\Release_MD\Shared\libema.dll"
+)
+
+$allArtifactsPresent = $true
+foreach ($artifact in $artifacts) {
+    if (Test-Path $artifact) {
+        Write-Host "  [OK] $artifact" -ForegroundColor Green
+    } else {
+        Write-Host "  [ERROR] $artifact (NOT FOUND)" -ForegroundColor Red
+        $allArtifactsPresent = $false
+    }
+}
+
+# ============================================================================
+# Summary
+# ============================================================================
+
+Write-Step "Build Summary"
+
+if ($VerifyOnly) {
+    Write-Host "Verification complete. Review results above." -ForegroundColor Cyan
+} elseif ($allArtifactsPresent -and $allExternalsOk -and $allSdkLibsOk) {
+    Write-Success "BUILD SUCCESSFUL!"
+    Write-Host "`nAll artifacts built with static CRT (/MT)" -ForegroundColor Green
+    Write-Host "  - External libraries: [OK]" -ForegroundColor Green
+    Write-Host "  - SDK static libraries: [OK]" -ForegroundColor Green
+    Write-Host "  - SDK shared libraries: [OK]" -ForegroundColor Green
+} else {
+    Write-Error-Custom "BUILD INCOMPLETE OR FAILED"
+    Write-Host "Review the output above for details." -ForegroundColor Yellow
+    exit 1
+}
