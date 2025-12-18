@@ -103,14 +103,66 @@ if (-not $SkipClean -and -not $VerifyOnly) {
     
     cd $REPO_ROOT
     
+    # Helper function to remove directory with retry logic (handles antivirus locks)
+    function Remove-DirectoryWithRetry {
+        param(
+            [string]$Path,
+            [int]$MaxRetries = 3,
+            [int]$DelaySeconds = 2
+        )
+        
+        if (-not (Test-Path $Path)) {
+            return $true
+        }
+        
+        for ($i = 1; $i -le $MaxRetries; $i++) {
+            try {
+                Write-Host "Removing $Path (attempt $i/$MaxRetries)..."
+                Remove-Item -Recurse -Force $Path -ErrorAction Stop
+                Write-Host "  Successfully removed $Path" -ForegroundColor Green
+                return $true
+            }
+            catch {
+                if ($i -lt $MaxRetries) {
+                    Write-Host "  Warning: $($_.Exception.Message)" -ForegroundColor Yellow
+                    Write-Host "  Waiting ${DelaySeconds}s for file locks to clear..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds $DelaySeconds
+                }
+                else {
+                    Write-Host "  ERROR: Failed to remove $Path after $MaxRetries attempts" -ForegroundColor Red
+                    Write-Host "  Error: $($_.Exception.Message)" -ForegroundColor Red
+                    Write-Host "" -ForegroundColor Yellow
+                    Write-Host "  POSSIBLE CAUSES:" -ForegroundColor Yellow
+                    Write-Host "  - Antivirus/Windows Defender scanning the directory" -ForegroundColor Yellow
+                    Write-Host "  - Files open in another application" -ForegroundColor Yellow
+                    Write-Host "  - Insufficient permissions" -ForegroundColor Yellow
+                    Write-Host "" -ForegroundColor Yellow
+                    Write-Host "  SOLUTIONS:" -ForegroundColor Yellow
+                    Write-Host "  1. Add this folder to Windows Defender exclusions:" -ForegroundColor Yellow
+                    Write-Host "     $REPO_ROOT\external\BUILD" -ForegroundColor Cyan
+                    Write-Host "  2. Close any applications that may have files open" -ForegroundColor Yellow
+                    Write-Host "  3. Run this script as Administrator" -ForegroundColor Yellow
+                    Write-Host "  4. Manually delete the directory and re-run" -ForegroundColor Yellow
+                    Write-Host ""
+                    return $false
+                }
+            }
+        }
+    }
+    
     Write-Host "Removing build directory..."
-    Remove-Item -Recurse -Force "build" -ErrorAction SilentlyContinue
+    $success1 = Remove-DirectoryWithRetry "build"
     
     Write-Host "Removing external builds..."
-    Remove-Item -Recurse -Force "external\BUILD" -ErrorAction SilentlyContinue
+    $success2 = Remove-DirectoryWithRetry "external\BUILD"
     
     Write-Host "Removing install directory (to force rebuild with static CRT)..."
-    Remove-Item -Recurse -Force "install" -ErrorAction SilentlyContinue
+    $success3 = Remove-DirectoryWithRetry "install"
+    
+    if (-not ($success1 -and $success2 -and $success3)) {
+        Write-Error-Custom "Failed to clean all directories. See errors above."
+        exit 1
+    }
     
     Write-Success "All artifacts cleaned"
 }
