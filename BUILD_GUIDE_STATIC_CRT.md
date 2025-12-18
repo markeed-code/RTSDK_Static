@@ -362,6 +362,47 @@ The external build script (`CMake/addExternal_l8w8jwt.cmake`):
 - Verify Git is available: `git --version`
 - Use VS2022's bundled CMake path as shown in step 2
 
+### "Access is denied" error during external package extraction
+
+**Symptom:**
+```
+-- extracting... [rename]
+file RENAME failed to rename because: Access is denied
+```
+
+**Cause:** Windows Defender or antivirus software is scanning the extracted files, locking them during the CMake `file(RENAME)` operation.
+
+**Solutions:**
+
+1. **Add Windows Defender Exclusions** (Recommended):
+   - Open Windows Security → Virus & threat protection → Exclusions
+   - Add folder exclusions for:
+     - `C:\Users\<YourUser>\Reuters\RTSDK_GIT\Real-Time-SDK\external\BUILD`
+     - `C:\Users\<YourUser>\Reuters\RTSDK_GIT\Real-Time-SDK\install`
+
+2. **Temporarily Disable Real-time Scanning** (during build only):
+   - Windows Security → Virus & threat protection → Manage settings
+   - Turn off "Real-time protection" temporarily
+   - Re-enable after build completes
+
+3. **Use Retry Logic**:
+   - The `rebuild_static_crt.ps1` script includes automatic retry logic with delays
+   - It will attempt cleanup 3 times with 2-second delays between attempts
+
+4. **Manual Cleanup** (if automated retry fails):
+   ```powershell
+   # Wait a few seconds and try again
+   Start-Sleep -Seconds 5
+   Remove-Item -Recurse -Force "external\BUILD"
+   Remove-Item -Recurse -Force "install"
+   ```
+
+5. **Run as Administrator**:
+   - Right-click PowerShell → "Run as Administrator"
+   - May help with permission-related issues
+
+**Note:** This issue is most common on corporate machines with aggressive antivirus policies. Adding folder exclusions is the most reliable long-term solution.
+
 ### MSBuild fails mid-solution
 
 **Cause:** Incomplete external builds or cache issues.  
