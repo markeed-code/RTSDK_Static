@@ -183,11 +183,16 @@ if (-not $VerifyOnly) {
     cd "build"
     
     Write-Host "Running CMake configuration with static CRT enforcement..."
+    Write-Host "  External libraries will build in: $REPO_ROOT\external\BUILD" -ForegroundColor Gray
+    Write-Host "  Install directory: $REPO_ROOT\install" -ForegroundColor Gray
+    
     & $CMAKE `
         -G "Visual Studio 17 2022" -A x64 `
         -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
         -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
         -Dlibxml2_USE_INSTALLED:BOOL=OFF `
+        -DRCDEV_EXTERNAL_BINARY_PREFIX:PATH="$REPO_ROOT" `
+        -DRCDEV_EXTERNAL_INSTALL_PREFIX:PATH="$REPO_ROOT\install" `
         -DBUILD_RTSDK-BINARYPACK:BOOL=OFF `
         -DRTSDK_OPT_BUILD_ETA_EMA_LIBRARIES:BOOL=ON `
         -DBUILD_UNIT_TESTS:BOOL=OFF `
@@ -205,6 +210,20 @@ if (-not $VerifyOnly) {
     
     Write-Success "VS2022 solution generated"
     cd $REPO_ROOT
+    
+    # Verify external directory location
+    Write-Host "`nVerifying external library locations..." -ForegroundColor Cyan
+    if (Test-Path "external\BUILD") {
+        Write-Host "  ✓ Externals built in: $REPO_ROOT\external\BUILD" -ForegroundColor Green
+    } elseif (Test-Path "build\external") {
+        Write-Host "  ✓ Externals built in: $REPO_ROOT\build\external" -ForegroundColor Green
+    } elseif (Test-Path "build\internal") {
+        Write-Host "  ⚠ WARNING: Externals built in unexpected location: $REPO_ROOT\build\internal" -ForegroundColor Yellow
+        Write-Host "  This may be due to cached CMake variables from a previous build." -ForegroundColor Yellow
+        Write-Host "  Consider cleaning CMakeCache.txt and re-running." -ForegroundColor Yellow
+    } else {
+        Write-Host "  ⚠ WARNING: Could not locate external build directory" -ForegroundColor Yellow
+    }
 }
 
 # ============================================================================
