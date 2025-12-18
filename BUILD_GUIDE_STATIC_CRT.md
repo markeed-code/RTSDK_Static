@@ -403,6 +403,38 @@ file RENAME failed to rename because: Access is denied
 
 **Note:** This issue is most common on corporate machines with aggressive antivirus policies. Adding folder exclusions is the most reliable long-term solution.
 
+### External libraries built in `build\internal` instead of `external\BUILD`
+
+**Symptom:** After running CMake, external libraries are located in `build\internal\` instead of the expected `external\BUILD\` directory.
+
+**Cause:** Cached CMake variable `RCDEV_EXTERNAL_BINARY_PREFIX` from a previous build with different configuration.
+
+**Solutions:**
+
+1. **Clean CMake Cache** (Recommended):
+   ```powershell
+   Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue
+   Remove-Item -Recurse -Force external\BUILD -ErrorAction SilentlyContinue
+   Remove-Item CMakeCache.txt -ErrorAction SilentlyContinue
+   ```
+   Then re-run CMake configuration (Step 2)
+
+2. **Explicitly Set External Directory**:
+   Add these flags to your CMake command:
+   ```powershell
+   -DRCDEV_EXTERNAL_BINARY_PREFIX:PATH="C:\Users\<YourUser>\Reuters\RTSDK_GIT\Real-Time-SDK"
+   -DRCDEV_EXTERNAL_INSTALL_PREFIX:PATH="C:\Users\<YourUser>\Reuters\RTSDK_GIT\Real-Time-SDK\install"
+   ```
+   This forces CMake to use `external\BUILD\` and `install\` directories.
+
+3. **Use the Automated Script**:
+   The `rebuild_static_crt.ps1` script automatically sets these paths correctly:
+   ```powershell
+   .\rebuild_static_crt.ps1
+   ```
+
+**Note:** The `build\internal` path typically indicates you're building from a different SDK branch or an older configuration. Always perform a clean build when switching between configurations.
+
 ### MSBuild fails mid-solution
 
 **Cause:** Incomplete external builds or cache issues.  
