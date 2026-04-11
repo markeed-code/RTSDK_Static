@@ -1,24 +1,27 @@
-# Real-Time SDK: Static CRT Build Guide (Release_MD x64)
+# Real-Time SDK: Static CRT Build Guide (Debug_Mdd & Release_MD x64)
 
 ## Overview
 
-This guide documents the process to build the Real-Time SDK (x64, Release_MD) with all externals statically linked against the MSVC runtime library (`/MT`). This eliminates CRT version conflicts and simplifies deployment.
+This guide documents the process to build the Real-Time SDK (x64, Debug_Mdd and Release_MD) with all externals statically linked against the MSVC runtime library. This eliminates CRT version conflicts and simplifies deployment.
+
+- **Debug builds** use `/MTd` (MultiThreadedDebug → LIBCMTD)
+- **Release builds** use `/MT` (MultiThreaded → LIBCMT)
 
 ### Problem Statement
 
 Prior builds encountered unresolved linker errors due to mismatched CRT versions between externals and the SDK:
-- Externals compiled with `/MD` (dynamic CRT)
-- SDK targets `/MT` (static CRT)
+- Externals compiled with `/MD` or `/MDd` (dynamic CRT)
+- SDK targets `/MT` or `/MTd` (static CRT)
 - Result: unresolved symbol errors during linking of shared libraries (`librsslVA_shared`, `libema_shared`)
 
 Additionally, `l8w8jwt` depends on mbedtls libraries, which must be properly linked into the consolidated external lib to avoid missing mbedtls symbols during final linking.
 
 ### Build Goals
 
-✓ All externals use static CRT (`/DEFAULTLIB:LIBCMT`)  
-✓ All mbedtls symbols bundled into `libl8w8jwt.lib`  
-✓ Clean Release_MD x64 link of EMA and Eta shared libraries  
-✓ Zero errors in final MSBuild step  
+✓ All externals use static CRT (`/DEFAULTLIB:LIBCMT` for Release, `/DEFAULTLIB:LIBCMTD` for Debug)  
+✓ All mbedtls symbols bundled into `libl8w8jwt.lib` and `libl8w8jwtd.lib`  
+✓ Clean Debug_Mdd and Release_MD x64 link of EMA and Eta shared libraries  
+✓ Zero errors in final MSBuild step for both configurations  
 
 ---
 
@@ -70,7 +73,7 @@ cd build
 & "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" `
   -G "Visual Studio 17 2022" -A x64 `
   -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
-  -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+  -DCMAKE_MSVC_RUNTIME_LIBRARY="$<$<CONFIG:Debug_Mdd>:MultiThreadedDebug>$<$<CONFIG:Debug>:MultiThreadedDebug>$<$<CONFIG:Release_MD>:MultiThreaded>$<$<CONFIG:Release>:MultiThreaded>" `
   -Dlibxml2_USE_INSTALLED:BOOL=OFF `
   -DBUILD_RTSDK-BINARYPACK:BOOL=OFF `
   -DRTSDK_OPT_BUILD_ETA_EMA_LIBRARIES:BOOL=ON `
@@ -87,7 +90,9 @@ cd build
 - Generates `build/rtsdk.sln` for Visual Studio 2022 (x64 platform)
 - Disables non-essential targets (examples, tests, doxygen) for faster iteration
 - Triggers automatic configuration of external projects (l8w8jwt, ccronexpr, cjson, zlib, lz4, libxml2, etc.)
-- CMake applies `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` and `CMP0091=NEW` via `rcdevCommonUtils.cmake`, forcing static CRT
+- CMake applies generator expression for static CRT:
+  - Debug/Debug_Mdd → MultiThreadedDebug (/MTd → LIBCMTD)
+  - Release/Release_MD → MultiThreaded (/MT → LIBCMT)
 
 ### 3. Rebuild Key Externals with Static CRT
 
@@ -221,6 +226,110 @@ $MSBUILD = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 
 **Note:** This issue occurs when CMake configuration is updated to use static CRT but object files from a previous dynamic CRT build are cached. A full clean forces recompilation of all sources with the correct `/MT` flag.
 
+#### Special Case: libxml2 Debug Library and Mixed CRT in libema.lib
+
+**Problem:** Debug builds of `libema.lib` may exhibit mixed CRT linkage (both `/DEFAULTLIB:LIBCMT` and `/DEFAULTLIB:LIBCMTD`), even when all external libraries are correctly built with static CRT.
+
+**Root Cause:** The libxml2 external library requires separate debug and release builds:
+- **Release**: `libxml2_a.lib` (built with `/MT` → LIBCMT) ✓
+- **Debug**: `libxml2_ad.lib` (built with `/MTd` → LIBCMTD) ✓
+
+If `libxml2_ad.lib` is missing, the CMake `LibXml2::LibXml2` target defaults to using `libxml2_a.lib` for both configurations. This causes debug SDK builds to link the release libxml2 library, introducing `/DEFAULTLIB:LIBCMT` into debug libraries that should only have `/DEFAULTLIB:LIBCMTD`.
+
+**Diagnosis:**
+```powershell
+$DUMPBIN = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\dumpbin.exe"
+
+# Check if debug libema.lib has mixed CRT
+& $DUMPBIN /directives "Cpp-C\Ema\Libs\WIN_64_VS143\Debug_MDd\libema.lib" | Select-String "DEFAULTLIB" | Select-String "LIBCMT" | Sort-Object -Unique
+```
+
+**Expected (correct):** Only `/DEFAULTLIB:LIBCMTD`  
+**Problem:** Both `/DEFAULTLIB:LIBCMT` and `/DEFAULTLIB:LIBCMTD`
+
+**Solution:**
+
+1. **Verify libxml2 debug library exists:**
+   ```powershell
+   if (Test-Path "build\install\lib\libxml2_ad.lib") {
+       Write-Host "✅ Debug library exists" -ForegroundColor Green
+   } else {
+       Write-Host "❌ Missing libxml2_ad.lib - will cause mixed CRT!" -ForegroundColor Red
+   }
+   ```
+
+2. **Build libxml2 debug library** (if missing):
+   ```powershell
+   cd build\external\BUILD\libxml2\source
+   
+   $CMAKE = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+   
+   # Configure with Debug static CRT
+   & $CMAKE -G "Visual Studio 17 2022" -A x64 `
+     -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+     -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreadedDebug" `
+     -DBUILD_SHARED_LIBS=OFF `
+     -DLIBXML2_WITH_ICONV=OFF `
+     -DLIBXML2_WITH_ZLIB=OFF `
+     -DLIBXML2_WITH_PYTHON=OFF `
+     -DLIBXML2_WITH_LZMA=OFF `
+     -S . -B build_debug
+   
+   # Build debug configuration
+   & $CMAKE --build build_debug --config Debug --target LibXml2
+   
+   # Copy debug library to install directory
+   Copy-Item "build_debug\Debug\libxml2sd.lib" "../../../../install/lib/libxml2_ad.lib" -Force
+   ```
+
+3. **Verify both libxml2 libraries have correct CRT:**
+   ```powershell
+   $DUMPBIN = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\dumpbin.exe"
+   
+   Write-Host "`nlibxml2_a.lib (Release):" -ForegroundColor Yellow
+   & $DUMPBIN /directives "build\install\lib\libxml2_a.lib" | Select-String "DEFAULTLIB" | Sort-Object -Unique
+   # Expected: /DEFAULTLIB:LIBCMT
+   
+   Write-Host "`nlibxml2_ad.lib (Debug):" -ForegroundColor Yellow
+   & $DUMPBIN /directives "build\install\lib\libxml2_ad.lib" | Select-String "DEFAULTLIB" | Sort-Object -Unique
+   # Expected: /DEFAULTLIB:LIBCMTD
+   ```
+
+4. **Rebuild libema.lib:**
+   ```powershell
+   $MSBUILD = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
+   
+   # Rebuild Debug_MDd configuration
+   & $MSBUILD "build\Cpp-C\Ema\Src\Access\libema.vcxproj" `
+     /p:Configuration=Debug_MDd /p:Platform=x64 /t:Rebuild
+   ```
+
+5. **Verify fix:**
+   ```powershell
+   & $DUMPBIN /directives "Cpp-C\Ema\Libs\WIN_64_VS143\Debug_MDd\libema.lib" | Select-String "DEFAULTLIB" | Select-String "LIBCMT" | Sort-Object -Unique
+   # Expected: Only /DEFAULTLIB:LIBCMTD (no LIBCMT)
+   ```
+
+**Technical Details:**
+
+The fix is implemented in `CMake/addExternal_libxml2.cmake` (lines 380-384), which sets configuration-specific `IMPORTED_LOCATION` properties on the `LibXml2::LibXml2` target:
+
+```cmake
+# Set configuration-specific library locations for static CRT support
+if (WIN32)
+    # Debug configuration uses libxml2_ad.lib
+    set_property(TARGET LibXml2::LibXml2 PROPERTY IMPORTED_LOCATION_DEBUG_MDD "${libxml2_install}/lib/libxml2_ad.lib")
+    set_property(TARGET LibXml2::LibXml2 PROPERTY IMPORTED_LOCATION_DEBUG "${libxml2_install}/lib/libxml2_ad.lib")
+    # Release configuration uses libxml2_a.lib
+    set_property(TARGET LibXml2::LibXml2 PROPERTY IMPORTED_LOCATION_RELEASE_MD "${libxml2_install}/lib/libxml2_a.lib")
+    set_property(TARGET LibXml2::LibXml2 PROPERTY IMPORTED_LOCATION_RELEASE "${libxml2_install}/lib/libxml2_a.lib")
+endif()
+```
+
+This ensures CMake uses the correct library variant for each build configuration, preventing CRT mismatches.
+
+**Note:** The `rebuild_static_crt.ps1` script (Step 3, lines 426-490) automatically builds both debug and release libxml2 libraries using CMake, eliminating this issue when using the automated rebuild process.
+
 ### 6. Consolidate l8w8jwt with mbedtls Libraries
 
 The `l8w8jwt` external depends on mbedtls. The SDK's external script automatically consolidates them, but if manual repackaging is needed:
@@ -302,12 +411,19 @@ Static CRT is enforced through:
 1. **CMake policy `CMP0091=NEW`** in external projects:
    - Tells CMake to use `CMAKE_MSVC_RUNTIME_LIBRARY` variable instead of legacy `/MD` or `/MT` flags
 
-2. **`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`** in `CMake/rcdevCommonUtils.cmake`:
+2. **`CMAKE_MSVC_RUNTIME_LIBRARY` with generator expression** in `CMake/rcdevCompilerOptions.cmake`:
+   ```cmake
+   set(CMAKE_MSVC_RUNTIME_LIBRARY 
+       "$<$<CONFIG:Debug_Mdd>:MultiThreadedDebug>$<$<CONFIG:Debug>:MultiThreadedDebug>$<$<CONFIG:Release_MD>:MultiThreaded>$<$<CONFIG:Release>:MultiThreaded>" 
+       CACHE STRING "" FORCE)
+   ```
+   - Debug configurations → MultiThreadedDebug (/MTd → LIBCMTD)
+   - Release configurations → MultiThreaded (/MT → LIBCMT)
    - Passed to all externals via `CMAKE_MSVC_RUNTIME_LIBRARY_FOR_EXTERNAL`
-   - Equivalent to `/MT` flag (static CRT, no debug info)
 
 3. **Verification via `dumpbin /directives`**:
-   - Shows `/DEFAULTLIB:LIBCMT` for static CRT
+   - Debug libs show `/DEFAULTLIB:LIBCMTD` for static CRT Debug
+   - Release libs show `/DEFAULTLIB:LIBCMT` for static CRT Release
    - Shows `/DEFAULTLIB:MSVCRTD` or `/DEFAULTLIB:MSVCRT` if CRT mismatch remains
 
 ### l8w8jwt + mbedtls Consolidation
@@ -321,16 +437,18 @@ The external build script (`CMake/addExternal_l8w8jwt.cmake`):
 
 ## Troubleshooting
 
-### External libraries built with dynamic CRT (MSVCRT) instead of static CRT (LIBCMT)
+### External libraries built with dynamic CRT (MSVCRT/MSVCRTD) instead of static CRT (LIBCMT/LIBCMTD)
 
 **Cause:** CMake not enforcing static CRT on external projects.  
 **Solution:**
 1. Ensure the CMake command includes these critical flags:
    - `-DCMAKE_POLICY_DEFAULT_CMP0091=NEW`
-   - `-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`
+   - `-DCMAKE_MSVC_RUNTIME_LIBRARY` with generator expression for both Debug and Release
 2. These flags MUST be passed at the top-level CMake configuration (Step 2)
 3. Clean all artifacts (Step 1) and re-run CMake configuration
 4. Verify rebuilt libs with `dumpbin /directives install\lib\*.lib | Select-String "DEFAULTLIB"`
+   - Debug libs should show LIBCMTD
+   - Release libs should show LIBCMT
 
 ### "Unresolved external symbol mbedtls_*"
 
@@ -463,17 +581,17 @@ cd ..
 8
 ## Summary
 
-This guide walks through a full static CRT build on Windows (VS2022, x64, Release_MD):
+This guide walks through a full static CRT build on Windows (VS2022, x64, Debug_Mdd and Release_MD):
 
 1. ✓ Clean old artifacts
-2. ✓ Generate VS solution with CMake (static CRT options applied)
-3. ✓ Rebuild key externals (ccronexpr, cjson, l8w8jwt) to confirm static CRT
-4. ✓ Verify CRT with dumpbin
-5. ✓ Consolidate l8w8jwt + mbedtls into single lib
-6. ✓ Build SDK via MSBuild
-7. ✓ Verify .dll output artifacts
+2. ✓ Generate VS solution with CMake (static CRT options applied via generator expressions)
+3. ✓ Rebuild key externals (ccronexpr, cjson, l8w8jwt, zlib, lz4) for Debug and Release
+4. ✓ Verify CRT with dumpbin (LIBCMTD for Debug, LIBCMT for Release)
+5. ✓ Consolidate l8w8jwt + mbedtls into single lib (Debug and Release variants)
+6. ✓ Build SDK via MSBuild (both Debug_Mdd and Release_MD)
+7. ✓ Verify .dll output artifacts for both configurations
 
-**Result:** Clean Release_MD x64 build with zero unresolved symbols and all externals using `/MT` (static CRT).
+**Result:** Clean Debug_Mdd and Release_MD x64 builds with zero unresolved symbols and all externals using `/MTd` (Debug) or `/MT` (Release) static CRT.
 
 ---
 
