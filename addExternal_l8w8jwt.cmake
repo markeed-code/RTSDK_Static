@@ -133,7 +133,7 @@ if((NOT l8w8jwt_USE_INSTALLED) AND
 	#As of 4/21/2021, VS2019 is showing an error as warnings issue with winbase.h, so we're going to turn off these warnings to build the library.
 		if(WIN32)
 			list(APPEND _config_options "-DCMAKE_POLICY_DEFAULT_CMP0091:STRING=NEW"
-										"-DCMAKE_MSVC_RUNTIME_LIBRARY:STRING=${CMAKE_MSVC_RUNTIME_LIBRARY_FOR_EXTERNAL}"
+										"-DCMAKE_MSVC_RUNTIME_LIBRARY:STRING=$<$<CONFIG:Debug>:MultiThreadedDebug>$<$<CONFIG:Release>:MultiThreaded>"
 										"-DCMAKE_C_FLAGS:STRING=-m${RCDEV_HOST_SYSTEM_BITS} /wd4291 /wd5105 /D__func__=__FUNCTION__ "
 										"-DCMAKE_CXX_FLAGS:STRING=-m${RCDEV_HOST_SYSTEM_BITS}"
 										"-DCMAKE_PREFIX_PATH:PATH=${CMAKE_PREFIX_PATH_TMP}"

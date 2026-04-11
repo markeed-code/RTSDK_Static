@@ -373,6 +373,18 @@ if ((NOT LibXml2_FOUND) OR
    		set_target_properties(LibXml2::LibXml2 PROPERTIES 
 				IMPORTED_LINK_INTERFACE_LANGUAGES "C"
 				INTERFACE_INCLUDE_DIRECTORIES "${LIBXML2_INCLUDE_DIRS}")
+   		
+   		# Set configuration-specific library locations for static CRT support
+   		if (WIN32)
+   			# Debug configuration uses libxml2_ad.lib, fallback to libxml2_a.lib
+   			set_property(TARGET LibXml2::LibXml2 PROPERTY IMPORTED_LOCATION_DEBUG_MDD "${libxml2_install}/lib/libxml2_ad.lib")
+   			set_property(TARGET LibXml2::LibXml2 PROPERTY IMPORTED_LOCATION_DEBUG "${libxml2_install}/lib/libxml2_ad.lib")
+   			# Release configuration uses libxml2_a.lib
+   			set_property(TARGET LibXml2::LibXml2 PROPERTY IMPORTED_LOCATION_RELEASE_MD "${libxml2_install}/lib/libxml2_a.lib")
+   			set_property(TARGET LibXml2::LibXml2 PROPERTY IMPORTED_LOCATION_RELEASE "${libxml2_install}/lib/libxml2_a.lib")
+   		endif()
+   		
+   		# Fallback for generic IMPORTED_LOCATION
    		set_property(TARGET LibXml2::LibXml2 APPEND PROPERTY IMPORTED_LOCATION "${LIBXML2_LIBRARY}")
 	endif()
 

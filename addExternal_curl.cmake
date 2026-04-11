@@ -94,7 +94,7 @@ if((NOT curl_USE_INSTALLED) AND
 		set(_config_options "${_config_options}"
 						"-DCURL_USE_SCHANNEL:BOOL=ON"
 						"-DCMAKE_POLICY_DEFAULT_CMP0091:STRING=NEW"
-						"-DCMAKE_MSVC_RUNTIME_LIBRARY:STRING=${CMAKE_MSVC_RUNTIME_LIBRARY_FOR_EXTERNAL}"
+						"-DCMAKE_MSVC_RUNTIME_LIBRARY:STRING=$<$<CONFIG:Debug>:MultiThreadedDebug>$<$<CONFIG:Release>:MultiThreaded>"
 						"-DCURL_STATIC_CRT:BOOL=ON")
 #						"-DCMAKE_USE_WINSSL:BOOL=ON")
 	else()

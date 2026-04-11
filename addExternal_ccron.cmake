@@ -143,7 +143,7 @@ if( (NOT ccronexpr_USE_INSTALLED) AND
 	unset(_cfg_type)
 	if (WIN32)
 		list(APPEND _config_options "-DCMAKE_POLICY_DEFAULT_CMP0091:STRING=NEW"
-									"-DCMAKE_MSVC_RUNTIME_LIBRARY:STRING=${CMAKE_MSVC_RUNTIME_LIBRARY_FOR_EXTERNAL}"
+									"-DCMAKE_MSVC_RUNTIME_LIBRARY:STRING=$<$<CONFIG:Debug>:MultiThreadedDebug>$<$<CONFIG:Release>:MultiThreaded>"
 									"-DCMAKE_DEBUG_POSTFIX:STRING=d"
 									"-DCMAKE_C_FLAGS:STRING=/DEBUG:NONE")
 	else()
