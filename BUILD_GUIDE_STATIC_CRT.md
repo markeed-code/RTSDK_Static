@@ -39,6 +39,73 @@ Verify CMake and tools are available:
 
 ---
 
+## Automated Build Script (Recommended)
+
+For a fully automated rebuild with static CRT, use the provided PowerShell script:
+
+```powershell
+cd c:\Users\marke\Reuters\RTSDK_GIT\Real-Time-SDK
+.\rebuild_static_crt.ps1
+```
+
+**What the script does:**
+- ✓ Cleans all previous artifacts (build, external\BUILD, install)
+- ✓ Generates VS2022 solution with static CRT enforced via CMake
+- ✓ Rebuilds all external dependencies with correct static CRT:
+  - zlib, lz4, libxml2 (both Debug and Release)
+  - cjson, ccronexpr (with test builds disabled)
+  - l8w8jwt (consolidated with mbedtls libraries)
+- ✓ Includes **diagnostic monitoring** for cjson build:
+  - Color-coded output showing Debug/Release folder contents
+  - Timestamps for each file creation
+  - Red error alerts when wrong files appear in wrong folders
+  - Helps identify exactly which build stage causes issues
+- ✓ Verifies CRT in all libraries using dumpbin
+- ✓ Builds SDK solution (Release_MD and Debug_Mdd)
+- ✓ Includes retry logic for antivirus file lock issues
+
+**Script Parameters:**
+```powershell
+# Skip the clean step (use existing build directory)
+.\rebuild_static_crt.ps1 -SkipClean
+
+# Skip external rebuilds (only build SDK)
+.\rebuild_static_crt.ps1 -SkipExternals
+
+# Only verify CRT in existing libraries (no building)
+.\rebuild_static_crt.ps1 -VerifyOnly
+```
+
+**Diagnostic Output Example:**
+
+During cjson rebuild, the script shows:
+```
+[STAGE 2: Building Release configuration]
+  [DEBUG MONITOR - After Release build]
+    <no .lib files>
+  [RELEASE MONITOR - After Release build]
+    cjson.lib (63700 bytes) - 22:40:11
+  ✅ OK at After Release build: Files in correct locations
+
+[STAGE 3: Building Debug configuration]
+  [DEBUG MONITOR - After Debug build]
+    cjsond.lib (63698 bytes) - 22:40:19
+  [RELEASE MONITOR - After Debug build]
+    cjson.lib (63700 bytes) - 22:40:11
+  ✅ OK at After Debug build: Files in correct locations
+```
+
+If problems occur, you'll see:
+```
+  ❌ ERROR at After Debug build: Debug/cjson.lib exists (should be cjsond.lib)
+```
+
+This immediately identifies which build step is creating wrong files, making troubleshooting much easier.
+
+**For manual step-by-step process**, continue to the sections below.
+
+---
+
 ## Step-by-Step Build Process
 
 ### 1. Clean Previous Artifacts (Recommended for Clean Rebuild)
@@ -106,9 +173,38 @@ cd c:\Users\marke\Reuters\RTSDK_GIT\Real-Time-SDK
 ```
 
 **Example: Rebuild cjson (Debug & Release)**
+
+**Important:** cjson requires special configuration to ensure correct CRT and DEBUG_POSTFIX behavior. See the troubleshooting section "cjson libraries have wrong CRT or wrong files in Debug/Release folders" for details.
+
 ```powershell
-"C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --build external\BUILD\cjson\build --config Debug
-"C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --build external\BUILD\cjson\build --config Release
+cd c:\Users\marke\Reuters\RTSDK_GIT\Real-Time-SDK\external\BUILD\cjson\source
+Remove-Item "CMakeCache.txt" -ErrorAction SilentlyContinue
+Remove-Item -Recurse "CMakeFiles" -ErrorAction SilentlyContinue
+
+& "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" `
+  -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_POLICY_DEFAULT_CMP0091=OLD `
+  -DCMAKE_C_FLAGS_DEBUG="/MTd /Zi /Ob0 /Od /RTC1" `
+  -DCMAKE_C_FLAGS_RELEASE="/MT /O2 /Ob2 /DNDEBUG" `
+  -DCMAKE_DEBUG_POSTFIX=d `
+  -DENABLE_CJSON_TEST:BOOL=OFF `
+  -DENABLE_CUSTOM_COMPILER_FLAGS:BOOL=OFF `
+  -DBUILD_SHARED_LIBS=OFF `
+  -DCMAKE_INSTALL_PREFIX="$REPO_ROOT\install" `
+  .
+
+# Build only the cjson target (not tests)
+& "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --build . --config Debug --target cjson
+& "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --build . --config Release --target cjson
+
+# Verify only correct files exist
+Get-ChildItem "Debug\*.lib"    # Should show only: cjsond.lib
+Get-ChildItem "Release\*.lib"  # Should show only: cjson.lib
+
+# Copy to install
+if (-not (Test-Path "$REPO_ROOT\install\lib")) { mkdir "$REPO_ROOT\install\lib" -Force | Out-Null }
+Copy-Item "Debug\cjsond.lib" "$REPO_ROOT\install\lib\cjsond.lib" -Force
+Copy-Item "Release\cjson.lib" "$REPO_ROOT\install\lib\cjson.lib" -Force
 ```
 
 **Example: Rebuild l8w8jwt (Debug & Release)**
@@ -561,6 +657,109 @@ file RENAME failed to rename because: Access is denied
 2. Re-run CMake configuration (step 2)
 3. Re-run MSBuild (step 6)
 
+### cjson libraries have wrong CRT or wrong files in Debug/Release folders
+
+**Symptom:** 
+- `install\lib\cjson.lib` has `/DEFAULTLIB:LIBCMTD` instead of `/DEFAULTLIB:LIBCMT`
+- Debug folder contains both `cjson.lib` and `cjsond.lib` (should only have `cjsond.lib`)
+- Release folder contains `cjsond.lib` (should only have `cjson.lib`)
+- File sizes don't match expected values
+
+**Root Causes:**
+
+1. **Test builds creating non-postfixed libraries:**
+   - When `ENABLE_CJSON_TEST:BOOL` is not explicitly disabled, cjson builds test targets
+   - Test builds create `cjson.lib` without the debug postfix, even in Debug configuration
+   - This overwrites or conflicts with the correctly-postfixed `cjsond.lib`
+
+2. **CMP0091 policy and CMAKE_DEBUG_POSTFIX interaction:**
+   - When using `CMAKE_POLICY_DEFAULT_CMP0091=NEW`, the `CMAKE_DEBUG_POSTFIX` may not work correctly in all scenarios
+   - For cjson specifically, using `CMP0091=OLD` with direct C_FLAGS provides more reliable results
+
+3. **Install target copying wrong files:**
+   - Default `cmake --install` may copy libraries in the wrong order or from the wrong configuration
+   - Manual file copying with explicit paths ensures correct files are installed
+
+**Solutions:**
+
+1. **In `CMake/addExternal_cjson.cmake`** (already implemented):
+   ```cmake
+   # Use OLD policy with direct C_FLAGS for reliable CRT control
+   list(APPEND _config_options "-DCMAKE_DEBUG_POSTFIX:STRING=d"
+                               "-DCMAKE_POLICY_DEFAULT_CMP0091:STRING=OLD"
+                               "-DCMAKE_C_FLAGS_DEBUG:STRING=/MTd /Zi /Ob0 /Od /RTC1"
+                               "-DCMAKE_C_FLAGS_RELEASE:STRING=/MT /O2 /Ob2 /DNDEBUG")
+   
+   # Explicitly disable tests to prevent non-postfixed lib creation
+   set(_config_options "-DENABLE_CUSTOM_COMPILER_FLAGS:BOOL=OFF"
+                       "-DENABLE_CJSON_TEST:BOOL=OFF")
+   
+   # Manual install with explicit targets and cleanup
+   set( _EPA_INSTALL_COMMAND 
+       "INSTALL_COMMAND    \"${CMAKE_COMMAND}\"   --build .  --config Debug --target cjson"
+       "        COMMAND    \"${CMAKE_COMMAND}\" -E remove -f Debug/cjson.lib"
+       "        COMMAND    \"${CMAKE_COMMAND}\" -E make_directory <INSTALL_DIR>/include/cjson"
+       "        COMMAND    \"${CMAKE_COMMAND}\" -E make_directory <INSTALL_DIR>/lib"
+       "        COMMAND    \"${CMAKE_COMMAND}\" -E copy_if_different cJSON.h <INSTALL_DIR>/include/cjson/"
+       "        COMMAND    \"${CMAKE_COMMAND}\" -E copy_if_different Debug/cjsond.lib <INSTALL_DIR>/lib/cjsond.lib"
+       "        COMMAND    \"${CMAKE_COMMAND}\"   --build .  --config Release --target cjson"
+       "        COMMAND    \"${CMAKE_COMMAND}\" -E copy_if_different Release/cjson.lib <INSTALL_DIR>/lib/cjson.lib")
+   ```
+
+2. **In `rebuild_static_crt.ps1`** (already implemented):
+   ```powershell
+   & $CMAKE `
+       -G "Visual Studio 17 2022" -A x64 `
+       -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+       -DCMAKE_MSVC_RUNTIME_LIBRARY="`$<`$<CONFIG:Debug>:MultiThreadedDebug>`$<`$<CONFIG:Release>:MultiThreaded>" `
+       -DBUILD_SHARED_LIBS=OFF `
+       -DCMAKE_INSTALL_PREFIX="$REPO_ROOT\install" `
+       -DCMAKE_DEBUG_POSTFIX=d `
+       -DENABLE_CJSON_TEST:BOOL=OFF `
+       -DENABLE_CUSTOM_COMPILER_FLAGS:BOOL=OFF `
+       .
+   ```
+
+3. **Verify the fix:**
+   ```powershell
+   # Check Debug folder has ONLY cjsond.lib
+   Get-ChildItem "external\BUILD\cjson\source\Debug\*.lib"
+   # Expected: Only cjsond.lib (no cjson.lib, no cJSON_test.lib)
+   
+   # Check Release folder has ONLY cjson.lib
+   Get-ChildItem "external\BUILD\cjson\source\Release\*.lib"
+   # Expected: Only cjson.lib (no cjsond.lib, no cJSON_test.lib)
+   
+   # Verify CRT in installed libraries
+   $DUMPBIN = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\dumpbin.exe"
+   & $DUMPBIN /directives install\lib\cjson.lib | Select-String "DEFAULTLIB:LIBCMT"
+   # Expected: /DEFAULTLIB:LIBCMT (Release - static CRT)
+   
+   & $DUMPBIN /directives install\lib\cjsond.lib | Select-String "DEFAULTLIB:LIBCMT"
+   # Expected: /DEFAULTLIB:LIBCMTD (Debug - static CRT)
+   ```
+
+4. **Use diagnostic monitoring** (included in `rebuild_static_crt.ps1`):
+   - The script now includes color-coded monitoring that shows Debug and Release folder contents after each build stage
+   - Red errors highlight when wrong files appear in wrong folders
+   - This helps identify exactly which build step is causing issues
+
+**Key Points:**
+- **Always disable tests** when building cjson (`-DENABLE_CJSON_TEST:BOOL=OFF`)
+- **Use explicit targets** (`--target cjson`) to build only the main library
+- **Clean up** any non-postfixed files after Debug build
+- **Manual copy** ensures correct files are installed, not whatever the install target decides
+- **DEBUG_POSTFIX works** when combined with `CMP0091=OLD` and direct C_FLAGS
+
+**Technical Background:**
+
+The cjson project creates multiple targets:
+- `cjson` (main library) - respects DEBUG_POSTFIX → creates `cjsond.lib` in Debug
+- `cjson_test` (test library) - does NOT respect DEBUG_POSTFIX → creates `cjson.lib` even in Debug
+- `cJSON_test` (test executable) - also creates `cJSON_test.lib`
+
+When tests are enabled, the test library overwrites or conflicts with the intended output. The fix ensures only the main `cjson` target is built, and explicitly removes any stray `Debug/cjson.lib` files before copying to the install directory.
+
 ---
 
 ## Quick Reference
@@ -592,6 +791,48 @@ This guide walks through a full static CRT build on Windows (VS2022, x64, Debug_
 7. ✓ Verify .dll output artifacts for both configurations
 
 **Result:** Clean Debug_Mdd and Release_MD x64 builds with zero unresolved symbols and all externals using `/MTd` (Debug) or `/MT` (Release) static CRT.
+
+---
+
+## Change Log
+
+### April 13, 2026 - cjson Build Fixes
+
+**Issues Resolved:**
+- Fixed cjson libraries having wrong CRT (Debug library `cjson.lib` had `/DEFAULTLIB:LIBCMTD` instead of `/DEFAULTLIB:LIBCMT`)
+- Eliminated duplicate/wrong files in Debug and Release folders (Debug folder was creating both `cjson.lib` and `cjsond.lib`)
+- Test builds creating non-postfixed libraries that conflicted with DEBUG_POSTFIX
+
+**Changes Made:**
+
+1. **`CMake/addExternal_cjson.cmake`:**
+   - Changed from `CMP0091=NEW` to `CMP0091=OLD` for more reliable CRT control with direct C_FLAGS
+   - Added explicit `-DENABLE_CJSON_TEST:BOOL=OFF` to disable test builds
+   - Changed install command from `--target install` to manual file copying with specific targets
+   - Added `cmake -E remove -f Debug/cjson.lib` cleanup step to remove any stray non-postfixed files
+   - Specified `--target cjson` for both Debug and Release builds to avoid building test targets
+
+2. **`rebuild_static_crt.ps1`:**
+   - Added `-DCMAKE_DEBUG_POSTFIX=d` to ensure debug suffix
+   - Added `-DENABLE_CJSON_TEST:BOOL=OFF` to match CMake configuration
+   - Added `-DENABLE_CUSTOM_COMPILER_FLAGS:BOOL=OFF` to prevent cjson from overriding compiler flags
+   - Implemented comprehensive diagnostic monitoring with color-coded output showing:
+     - Debug and Release folder contents after each build stage
+     - File sizes and timestamps for each library
+     - Red error alerts when wrong files appear in wrong locations
+     - Green success messages when files are in correct locations
+
+3. **Documentation Updates:**
+   - Added new troubleshooting section: "cjson libraries have wrong CRT or wrong files in Debug/Release folders"
+   - Updated "Rebuild cjson" example with correct configuration flags
+   - Added "Automated Build Script" section documenting the diagnostic monitoring features
+   - Included technical background explaining cjson's multiple targets (cjson, cjson_test, cJSON_test)
+
+**Impact:**
+- cjson Debug builds now correctly create only `cjsond.lib` with `/DEFAULTLIB:LIBCMTD`
+- cjson Release builds now correctly create only `cjson.lib` with `/DEFAULTLIB:LIBCMT`
+- No more mixed CRT or duplicate files
+- Diagnostic output makes troubleshooting much easier for future issues
 
 ---
 
