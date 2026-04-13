@@ -85,10 +85,10 @@ if( (NOT cjson_USE_INSTALLED) AND
 
 	unset(_cfg_type)
 	if (WIN32)
-		list(APPEND _config_options "-DCMAKE_POLICY_DEFAULT_CMP0091:STRING=NEW"
-									"-DCMAKE_MSVC_RUNTIME_LIBRARY:STRING=$<$<CONFIG:Debug>:MultiThreadedDebug>$<$<CONFIG:Release>:MultiThreaded>"
-									"-DCMAKE_DEBUG_POSTFIX:STRING=d"
-									"-DCMAKE_C_FLAGS:STRING=/DEBUG:NONE")
+		# Set CRT flags explicitly via compiler flags
+		list(APPEND _config_options "-DCMAKE_DEBUG_POSTFIX:STRING=d"
+									"-DCMAKE_C_FLAGS_DEBUG:STRING=/MTd /DEBUG:NONE"
+									"-DCMAKE_C_FLAGS_RELEASE:STRING=/MT /DEBUG:NONE")
 	else()
 		if (CMAKE_BUILD_TYPE MATCHES "Debug")
 			set(_cfg_type "${CMAKE_BUILD_TYPE}")
