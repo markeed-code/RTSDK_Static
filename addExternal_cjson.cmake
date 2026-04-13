@@ -125,13 +125,20 @@ if( (NOT cjson_USE_INSTALLED) AND
 
 	# Passing the two supported build config types along to the INSTALL_COMMAND for Windows and for 
 	# single build type platforms, like Linux, the current config typed is built and installed
-	# NOTE: Install Debug first, then Release. This ensures cjson.lib (Release) is not overwritten by Debug build.
-	#       Also manually copy cjsond.lib since cjson's CMakeLists.txt doesn't install the debug-postfix version.
+	# NOTE: We manually copy files instead of using install target to ensure correct files are copied.
+	#       The DEBUG_POSTFIX creates cjsond.lib, so we copy that directly.
+	#       Order: Build Debug, copy cjsond.lib, then Build Release, copy cjson.lib LAST.
+	#       We also remove any non-postfixed Debug/cjson.lib to prevent incorrect files.
 	if (WIN32)
 		set( _EPA_INSTALL_COMMAND 
-					"INSTALL_COMMAND    \"${CMAKE_COMMAND}\"   --build .  --target install  --config Debug "
+					"INSTALL_COMMAND    \"${CMAKE_COMMAND}\"   --build .  --config Debug --target cjson"
+					"        COMMAND    \"${CMAKE_COMMAND}\" -E remove -f Debug/cjson.lib"
+					"        COMMAND    \"${CMAKE_COMMAND}\" -E make_directory <INSTALL_DIR>/include/cjson"
+					"        COMMAND    \"${CMAKE_COMMAND}\" -E make_directory <INSTALL_DIR>/lib"
+					"        COMMAND    \"${CMAKE_COMMAND}\" -E copy_if_different cJSON.h <INSTALL_DIR>/include/cjson/"
 					"        COMMAND    \"${CMAKE_COMMAND}\" -E copy_if_different Debug/cjsond.lib <INSTALL_DIR>/lib/cjsond.lib"
-					"        COMMAND    \"${CMAKE_COMMAND}\"   --build .  --target install  --config Release ")
+					"        COMMAND    \"${CMAKE_COMMAND}\"   --build .  --config Release --target cjson"
+					"        COMMAND    \"${CMAKE_COMMAND}\" -E copy_if_different Release/cjson.lib <INSTALL_DIR>/lib/cjson.lib")
 	else()
 		set( _EPA_INSTALL_COMMAND 
 					"INSTALL_COMMAND    ${CMAKE_COMMAND}   --build .  --target install  --config ${_cfg_type} ")
