@@ -85,10 +85,10 @@ if( (NOT cjson_USE_INSTALLED) AND
 
 	unset(_cfg_type)
 	if (WIN32)
-		# Set CRT flags explicitly via compiler flags
 		list(APPEND _config_options "-DCMAKE_DEBUG_POSTFIX:STRING=d"
-									"-DCMAKE_C_FLAGS_DEBUG:STRING=/MTd /DEBUG:NONE"
-									"-DCMAKE_C_FLAGS_RELEASE:STRING=/MT /DEBUG:NONE")
+									"-DCMAKE_POLICY_DEFAULT_CMP0091:STRING=OLD"
+									"-DCMAKE_C_FLAGS_DEBUG:STRING=/MTd /Zi /Ob0 /Od /RTC1"
+									"-DCMAKE_C_FLAGS_RELEASE:STRING=/MT /O2 /Ob2 /DNDEBUG")
 	else()
 		if (CMAKE_BUILD_TYPE MATCHES "Debug")
 			set(_cfg_type "${CMAKE_BUILD_TYPE}")
@@ -125,10 +125,13 @@ if( (NOT cjson_USE_INSTALLED) AND
 
 	# Passing the two supported build config types along to the INSTALL_COMMAND for Windows and for 
 	# single build type platforms, like Linux, the current config typed is built and installed
+	# NOTE: Install Debug first, then Release. This ensures cjson.lib (Release) is not overwritten by Debug build.
+	#       Also manually copy cjsond.lib since cjson's CMakeLists.txt doesn't install the debug-postfix version.
 	if (WIN32)
 		set( _EPA_INSTALL_COMMAND 
-					"INSTALL_COMMAND    \"${CMAKE_COMMAND}\"   --build .  --target install  --config Release "
-					"        COMMAND    \"${CMAKE_COMMAND}\"   --build .  --target install  --config Debug ")
+					"INSTALL_COMMAND    \"${CMAKE_COMMAND}\"   --build .  --target install  --config Debug "
+					"        COMMAND    \"${CMAKE_COMMAND}\" -E copy_if_different Debug/cjsond.lib <INSTALL_DIR>/lib/cjsond.lib"
+					"        COMMAND    \"${CMAKE_COMMAND}\"   --build .  --target install  --config Release ")
 	else()
 		set( _EPA_INSTALL_COMMAND 
 					"INSTALL_COMMAND    ${CMAKE_COMMAND}   --build .  --target install  --config ${_cfg_type} ")
