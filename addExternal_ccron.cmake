@@ -142,10 +142,10 @@ if( (NOT ccronexpr_USE_INSTALLED) AND
 
 	unset(_cfg_type)
 	if (WIN32)
-		# Set CRT flags explicitly via compiler flags
 		list(APPEND _config_options "-DCMAKE_DEBUG_POSTFIX:STRING=d"
-									"-DCMAKE_C_FLAGS_DEBUG:STRING=/MTd /DEBUG:NONE"
-									"-DCMAKE_C_FLAGS_RELEASE:STRING=/MT /DEBUG:NONE")
+									"-DCMAKE_POLICY_DEFAULT_CMP0091:STRING=OLD"
+									"-DCMAKE_C_FLAGS_DEBUG:STRING=/MTd /Zi /Ob0 /Od /RTC1"
+									"-DCMAKE_C_FLAGS_RELEASE:STRING=/MT /O2 /Ob2 /DNDEBUG")
 	else()
 		if (CMAKE_BUILD_TYPE MATCHES "Debug")
 			set(_cfg_type "${CMAKE_BUILD_TYPE}")
@@ -192,10 +192,16 @@ if( (NOT ccronexpr_USE_INSTALLED) AND
 
 	# Passing the two supported build config types along to the INSTALL_COMMAND for Windows and for 
 	# single build type platforms, like Linux, the current config typed is built and installed
+	# NOTE: Build Debug first, then Release, and manually copy both libraries since ccronexpr
+	#       doesn't have CMake install targets.
 	if (WIN32)
 			set( _EPA_INSTALL_COMMAND 
-						"INSTALL_COMMAND    \"${CMAKE_COMMAND}\"   --build . --config Release "
-							"        COMMAND    \"${CMAKE_COMMAND}\"   --build . --config Debug ")
+						"INSTALL_COMMAND    \"${CMAKE_COMMAND}\"   --build . --config Debug "
+							"        COMMAND    \"${CMAKE_COMMAND}\" -E make_directory <INSTALL_DIR>/include/ccronexpr"
+							"        COMMAND    \"${CMAKE_COMMAND}\" -E copy_if_different ccronexpr.h <INSTALL_DIR>/include/ccronexpr/"
+							"        COMMAND    \"${CMAKE_COMMAND}\" -E copy_if_different Debug/ccronexprd.lib <INSTALL_DIR>/lib/ccronexprd.lib"
+							"        COMMAND    \"${CMAKE_COMMAND}\"   --build . --config Release "
+							"        COMMAND    \"${CMAKE_COMMAND}\" -E copy_if_different Release/ccronexpr.lib <INSTALL_DIR>/lib/ccronexpr.lib")
 	else()
 			set( _EPA_INSTALL_COMMAND 
 				"INSTALL_COMMAND    ${CMAKE_COMMAND}   --build . --config ${_cfg_type} ")
