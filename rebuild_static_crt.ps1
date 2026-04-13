@@ -316,19 +316,102 @@ if (-not $SkipExternals -and -not $VerifyOnly) {
         Remove-Item "CMakeCache.txt" -ErrorAction SilentlyContinue
         Remove-Item -Recurse "CMakeFiles" -ErrorAction SilentlyContinue
         
+        # Helper function to show Debug folder contents
+        function Show-DebugFolder {
+            param([string]$Stage)
+            Write-Host "  [DEBUG MONITOR - $Stage]" -ForegroundColor Magenta
+            if (Test-Path "Debug") {
+                $files = Get-ChildItem "Debug\*.lib" -ErrorAction SilentlyContinue | Select-Object Name, Length, LastWriteTime
+                if ($files) {
+                    $files | ForEach-Object {
+                        $timestamp = $_.LastWriteTime.ToString("HH:mm:ss")
+                        Write-Host "    $($_.Name) ($($_.Length) bytes) - $timestamp" -ForegroundColor Magenta
+                    }
+                } else {
+                    Write-Host "    <no .lib files>" -ForegroundColor Gray
+                }
+            } else {
+                Write-Host "    <Debug folder does not exist>" -ForegroundColor Gray
+            }
+        }
+        
+        # Helper function to show Release folder contents
+        function Show-ReleaseFolder {
+            param([string]$Stage)
+            Write-Host "  [RELEASE MONITOR - $Stage]" -ForegroundColor Yellow
+            if (Test-Path "Release") {
+                $files = Get-ChildItem "Release\*.lib" -ErrorAction SilentlyContinue | Select-Object Name, Length, LastWriteTime
+                if ($files) {
+                    $files | ForEach-Object {
+                        $timestamp = $_.LastWriteTime.ToString("HH:mm:ss")
+                        Write-Host "    $($_.Name) ($($_.Length) bytes) - $timestamp" -ForegroundColor Yellow
+                    }
+                } else {
+                    Write-Host "    <no .lib files>" -ForegroundColor Gray
+                }
+            } else {
+                Write-Host "    <Release folder does not exist>" -ForegroundColor Gray
+            }
+        }
+        
+        # Helper function to check for wrong files
+        function Check-WrongFiles {
+            param([string]$Stage)
+            $hasError = $false
+            if ((Test-Path "Debug\cjson.lib") -and -not (Test-Path "Debug\cjson.lib" | Where-Object { $_.Name -eq "cjsond.lib" })) {
+                Write-Host "  ❌ ERROR at $Stage`: Debug/cjson.lib exists (should be cjsond.lib)" -ForegroundColor Red -BackgroundColor Black
+                $hasError = $true
+            }
+            if ((Test-Path "Release\cjsond.lib")) {
+                Write-Host "  ❌ ERROR at $Stage`: Release/cjsond.lib exists (should be cjson.lib)" -ForegroundColor Red -BackgroundColor Black
+                $hasError = $true
+            }
+            if (-not $hasError) {
+                Write-Host "  ✅ OK at $Stage`: Files in correct locations" -ForegroundColor Green
+            }
+        }
+        
         & $CMAKE `
             -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
             -DCMAKE_MSVC_RUNTIME_LIBRARY="`$<`$<CONFIG:Debug>:MultiThreadedDebug>`$<`$<CONFIG:Release>:MultiThreaded>" `
             -DBUILD_SHARED_LIBS=OFF `
             -DCMAKE_INSTALL_PREFIX="$REPO_ROOT\install" `
+            -DCMAKE_DEBUG_POSTFIX=d `
+            -DENABLE_CJSON_TEST:BOOL=OFF `
+            -DENABLE_CUSTOM_COMPILER_FLAGS:BOOL=OFF `
             .
         
-        & $CMAKE --build . --config Release
-        & $CMAKE --build . --config Debug
-        & $CMAKE --install . --config Release
-        & $CMAKE --install . --config Debug
+        Write-Host "`n[STAGE 1: Before any build]" -ForegroundColor White -BackgroundColor DarkBlue
+        Show-DebugFolder "Before any build"
+        Show-ReleaseFolder "Before any build"
+        Check-WrongFiles "Before any build"
         
+        Write-Host "`n[STAGE 2: Building Release configuration]" -ForegroundColor White -BackgroundColor DarkBlue
+        & $CMAKE --build . --config Release
+        Show-DebugFolder "After Release build"
+        Show-ReleaseFolder "After Release build"
+        Check-WrongFiles "After Release build"
+        
+        Write-Host "`n[STAGE 3: Building Debug configuration]" -ForegroundColor White -BackgroundColor DarkBlue
+        & $CMAKE --build . --config Debug
+        Show-DebugFolder "After Debug build"
+        Show-ReleaseFolder "After Debug build"
+        Check-WrongFiles "After Debug build"
+        
+        Write-Host "`n[STAGE 4: Installing Release configuration]" -ForegroundColor White -BackgroundColor DarkBlue
+        & $CMAKE --install . --config Release
+        Show-DebugFolder "After Release install"
+        Show-ReleaseFolder "After Release install"
+        Check-WrongFiles "After Release install"
+        
+        Write-Host "`n[STAGE 5: Installing Debug configuration]" -ForegroundColor White -BackgroundColor DarkBlue
+        & $CMAKE --install . --config Debug
+        Show-DebugFolder "After Debug install"
+        Show-ReleaseFolder "After Debug install"
+        Check-WrongFiles "After Debug install"
+        
+        Write-Host "" # blank line
         Write-Success "cjson rebuilt"
         cd $REPO_ROOT
     }
